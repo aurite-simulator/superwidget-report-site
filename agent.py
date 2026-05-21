@@ -1,9 +1,9 @@
 """report_site agent.
 
 Builds a single-file HTML "control room" viewer at model_data/reports/index.html
-that aggregates every markdown report (finance, pipeline, payroll), worker
-activity rolled up from task_log_database, and Chart.js graphs of pipeline
-+ finance + payroll metrics over sim time.
+that aggregates every markdown report (finance, pipeline, payroll, efficiency),
+worker activity rolled up from task_log_database, and Chart.js graphs of
+pipeline + finance + payroll + efficiency metrics over sim time.
 
 Triggered by the framework's cron worker on a schedule defined in the model's
 crontab. Can also be invoked manually after a simulation finishes.
@@ -12,6 +12,7 @@ Reads:
   model_data/reports/finance_report_*.md
   model_data/reports/pipeline_report_*.md   (including embedded SNAPSHOT JSON)
   model_data/reports/payroll_*.md
+  model_data/reports/efficiency_*.md
   model_data/finance_database.db            (time series of finance state)
   model_data/payroll_database.db            (pay period rollups)
   model_data/task_log_database.db           (per-worker per-task firings)
@@ -128,6 +129,15 @@ def load_payroll_reports():
     return items
 
 
+def load_efficiency_reports():
+    items = _read_reports("efficiency_*.md")
+    for it in items:
+        start, end = _extract_period_range(it["raw"])
+        it["label"] = f"{start} → {end}" if start else it["filename"]
+    items.sort(key=lambda x: x["filename"])
+    return items
+
+
 # ─── Database series ─────────────────────────────────────────────────────
 
 def _connect(name):
@@ -175,6 +185,51 @@ def load_payroll_series():
     return rows
 
 
+def load_efficiency_series():
+    """One row per pay_period_id with total gross pay + productive firings
+    across all workers in that period's date window. cost_per_firing and
+    utilization are computed in Python after joining the two databases.
+    """
+    pay_conn = _connect("payroll_database.db")
+    log_conn = _connect("task_log_database.db")
+    if pay_conn is None or log_conn is None:
+        if pay_conn: pay_conn.close()
+        if log_conn: log_conn.close()
+        return []
+    try:
+        periods = [dict(r) for r in pay_conn.execute(
+            "SELECT pay_period_id, "
+            "       MIN(period_start) AS period_start, "
+            "       MAX(period_end)   AS period_end, "
+            "       SUM(gross_pay)    AS gross "
+            "FROM payroll_summary "
+            "GROUP BY pay_period_id ORDER BY pay_period_id"
+        )]
+        out = []
+        for p in periods:
+            row = log_conn.execute(
+                "SELECT COALESCE(SUM(work_count), 0)    AS productive, "
+                "       COALESCE(SUM(no_work_count), 0) AS bounce "
+                "FROM task_log WHERE sim_date BETWEEN ? AND ?",
+                (p["period_start"], p["period_end"]),
+            ).fetchone()
+            productive = int(row["productive"] or 0)
+            bounce = int(row["bounce"] or 0)
+            total = productive + bounce
+            out.append({
+                "pay_period_id": p["pay_period_id"],
+                "gross": float(p["gross"] or 0),
+                "productive": productive,
+                "bounce": bounce,
+                "cost_per_firing": (float(p["gross"] or 0) / productive) if productive > 0 else None,
+                "utilization": (productive / total) if total > 0 else None,
+            })
+        return out
+    finally:
+        pay_conn.close()
+        log_conn.close()
+
+
 def load_worker_activity():
     conn = _connect("task_log_database.db")
     if conn is None:
@@ -192,6 +247,142 @@ def load_worker_activity():
     finally:
         conn.close()
     return rows
+
+
+def _summary_metrics(finance_series, payroll_series, efficiency_series,
+                     pipeline_series):
+    """Headline numbers covering the whole sim run so far. Returns a dict
+    of label → (value, delta_or_None). delta is +/- prefix-formatted string,
+    or None when no delta is meaningful.
+    """
+    metrics = {}
+
+    if finance_series:
+        first = finance_series[0]
+        last = finance_series[-1]
+        cash_delta = last["cash_assets"] - first["cash_assets"]
+        metrics["Cash"] = (
+            f"${last['cash_assets']:,.0f}",
+            f"{'+' if cash_delta >= 0 else ''}${cash_delta:,.0f}",
+        )
+        metrics["Revenue (lifetime)"] = (f"${last['revenue']:,.0f}", None)
+        metrics["COGS (lifetime)"]    = (f"${last['cogs']:,.0f}", None)
+        metrics["Debt"]               = (f"${last['debt']:,.0f}", None)
+        metrics["Inventory"]          = (f"${last['inventory']:,.0f}", None)
+        metrics["Accounts receivable"] = (f"${last['accounts_receivable']:,.0f}", None)
+        metrics["Accounts payable"]    = (f"${last['accounts_payable']:,.0f}", None)
+
+    if payroll_series:
+        total_gross = sum(r["gross"] or 0 for r in payroll_series)
+        metrics["Pay periods settled"] = (str(len(payroll_series)), None)
+        metrics["Total gross payroll"] = (f"${total_gross:,.0f}", None)
+
+    if efficiency_series:
+        lifetime_productive = sum(r["productive"] for r in efficiency_series)
+        lifetime_bounce     = sum(r["bounce"]     for r in efficiency_series)
+        lifetime_gross      = sum(r["gross"]      for r in efficiency_series)
+        total_attempts = lifetime_productive + lifetime_bounce
+        if lifetime_productive > 0:
+            metrics["Cost / productive firing"] = (
+                f"${lifetime_gross / lifetime_productive:,.2f}", None)
+        if total_attempts > 0:
+            metrics["Utilization (lifetime)"] = (
+                f"{100 * lifetime_productive / total_attempts:.1f}%", None)
+
+    # Customer pipeline — latest snapshot + delta from first snapshot.
+    customer_rows = pipeline_series.get("customers") or []
+    if customer_rows:
+        sim_times = []
+        for r in customer_rows:
+            if r["sim_time"] not in sim_times:
+                sim_times.append(r["sim_time"])
+        first_t, last_t = sim_times[0], sim_times[-1]
+        latest_total = sum(r["count"] for r in customer_rows if r["sim_time"] == last_t)
+        first_total  = sum(r["count"] for r in customer_rows if r["sim_time"] == first_t)
+        delta = latest_total - first_total
+        metrics["Customers in pipeline"] = (
+            f"{latest_total:,}",
+            f"{'+' if delta >= 0 else ''}{delta:,}",
+        )
+
+    return metrics
+
+
+def _render_metrics_block(metrics):
+    if not metrics:
+        return "<p class='meta'>No data yet — run a simulation first.</p>"
+    cards = []
+    for label, (value, delta) in metrics.items():
+        delta_html = ""
+        if delta is not None:
+            cls = "up" if delta.startswith("+") else ("down" if delta.startswith("-") else "flat")
+            delta_html = f"<span class='metric-delta {cls}'>{html_module.escape(delta)}</span>"
+        cards.append(
+            f"<div class='metric-card'>"
+            f"<div class='metric-label'>{html_module.escape(label)}</div>"
+            f"<div class='metric-value'>{html_module.escape(value)}</div>"
+            f"{delta_html}</div>"
+        )
+    return "<div class='metrics-grid'>" + "".join(cards) + "</div>"
+
+
+def _summary_narrative(metrics, finance_series, payroll_series,
+                       efficiency_series):
+    """Ask Haiku for a 2-4 paragraph overview. Returns rendered Markdown
+    HTML, or an empty string if anthropic / API key isn't available.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return ""
+    try:
+        from anthropic import Anthropic
+    except ImportError:
+        return ""
+
+    metric_lines = "\n".join(
+        f"- {label}: {value}" + (f" ({delta})" if delta else "")
+        for label, (value, delta) in metrics.items()
+    )
+    timespan = ""
+    if finance_series:
+        timespan = (f"Finance snapshots from {finance_series[0]['date_time']} "
+                    f"to {finance_series[-1]['date_time']}.")
+
+    cost_lifetime_lines = []
+    for r in efficiency_series:
+        cpf = f"${r['cost_per_firing']:,.2f}" if r["cost_per_firing"] is not None else "n/a"
+        util = f"{r['utilization']*100:.0f}%" if r["utilization"] is not None else "n/a"
+        cost_lifetime_lines.append(
+            f"- {r['pay_period_id']}: gross ${r['gross']:,.0f}, "
+            f"productive {r['productive']}, bounce {r['bounce']}, "
+            f"cost/firing {cpf}, util {util}"
+        )
+    cost_lifetime = "\n".join(cost_lifetime_lines) or "(no settled periods yet)"
+
+    prompt = (
+        "You are writing the executive summary at the top of an internal "
+        "operating dashboard for a small widget-manufacturing simulation. "
+        "Given the headline metrics (covering the whole simulation run so "
+        "far) and the per-pay-period efficiency breakdown, write 2-4 short "
+        "paragraphs in Markdown covering:\n"
+        "  - overall trajectory: cash, revenue, and pipeline movement\n"
+        "  - operational efficiency trend across pay periods (is cost/firing "
+        "improving? Is utilization rising or falling?)\n"
+        "  - one or two observations about where the business stands and "
+        "what to watch next\n\n"
+        f"{timespan}\n\n"
+        "Headline metrics:\n"
+        f"{metric_lines}\n\n"
+        "Per-pay-period efficiency:\n"
+        f"{cost_lifetime}\n"
+    )
+    client = Anthropic(api_key=api_key)
+    response = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=1200,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return _md_to_html(response.content[0].text.strip())
 
 
 def derive_pipeline_series(pipeline_reports):
@@ -246,6 +437,22 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   details.worker > summary {{ font-family: "SF Mono", Consolas, monospace; font-size: 13px; }}
   table.activity {{ width: 100%; max-width: 720px; }}
   table.activity td:nth-child(n+2) {{ text-align: right; font-variant-numeric: tabular-nums; }}
+  .metrics-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+                   gap: 10px; margin: 12px 0 20px; }}
+  .metric-card {{ background: #f4f6f8; border: 1px solid #e1e4e8; border-radius: 6px;
+                  padding: 12px 14px; }}
+  .metric-label {{ font-size: 12px; color: #555; text-transform: uppercase;
+                   letter-spacing: 0.4px; }}
+  .metric-value {{ font-size: 22px; font-weight: 600; margin-top: 4px;
+                   font-variant-numeric: tabular-nums; color: #2c3e50; }}
+  .metric-delta {{ font-size: 13px; font-variant-numeric: tabular-nums;
+                   margin-top: 2px; display: inline-block; }}
+  .metric-delta.up {{ color: #27ae60; }}
+  .metric-delta.down {{ color: #c0392b; }}
+  .metric-delta.flat {{ color: #7f8c8d; }}
+  .narrative {{ background: #fafbfc; border-left: 3px solid #3498db;
+                padding: 8px 16px; margin: 6px 0 24px; }}
+  .narrative p {{ margin: 8px 0; line-height: 1.55; }}
 </style>
 </head>
 <body>
@@ -254,10 +461,15 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   <button data-tab="pipeline">Pipeline Reports ({pipeline_count})</button>
   <button data-tab="finance">Finance Reports ({finance_count})</button>
   <button data-tab="payroll">Payroll Reports ({payroll_count})</button>
+  <button data-tab="efficiency">Efficiency Reports ({efficiency_count})</button>
   <button data-tab="activity">Worker Activity</button>
 </nav>
 
 <div id="summary" class="tab-content active">
+  <h2>Overview</h2>
+  {summary_metrics_html}
+  {summary_narrative_html}
+
   <h2>Customer pipeline over time</h2>
   <p class="meta">From pipeline_report SNAPSHOT JSON. One line per customer status.</p>
   <div class="chart-wrap"><canvas id="chart-customers"></canvas></div>
@@ -276,6 +488,10 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   <h2>Payroll by pay period</h2>
   <p class="meta">Stacked: gross = net + federal tax + state tax + benefits.</p>
   <div class="chart-wrap"><canvas id="chart-payroll"></canvas></div>
+
+  <h2>Worker efficiency by pay period</h2>
+  <p class="meta">Cost per productive firing (gross pay ÷ task_log.work_count) and overall utilization (productive ÷ productive + bounce) across the period window.</p>
+  <div class="chart-wrap"><canvas id="chart-efficiency"></canvas></div>
 </div>
 
 <div id="pipeline" class="tab-content">
@@ -291,6 +507,11 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 <div id="payroll" class="tab-content">
   <h2>Payroll reports ({payroll_count})</h2>
   {payroll_html}
+</div>
+
+<div id="efficiency" class="tab-content">
+  <h2>Efficiency reports ({efficiency_count})</h2>
+  {efficiency_html}
 </div>
 
 <div id="activity" class="tab-content">
@@ -313,6 +534,7 @@ const customerSeries = {customer_series_json};
 const ordersValueSeries = {orders_value_series_json};
 const financeSeries = {finance_series_json};
 const payrollSeries = {payroll_series_json};
+const efficiencySeries = {efficiency_series_json};
 
 function pivotByStatus(rows) {{
   const byStatus = {{}};
@@ -411,6 +633,36 @@ const color = i => PALETTE[i % PALETTE.length];
                                 ticks: {{ callback: v => '$' + Number(v).toLocaleString() }} }} }} }},
   }});
 }})();
+
+(function() {{
+  const labels = efficiencySeries.map(r => r.pay_period_id);
+  const cpf  = efficiencySeries.map(r => r.cost_per_firing);
+  const util = efficiencySeries.map(r => r.utilization === null ? null : r.utilization * 100);
+  new Chart(document.getElementById('chart-efficiency'), {{
+    type: 'line',
+    data: {{
+      labels,
+      datasets: [
+        {{ label: '$ / productive firing', data: cpf,
+           borderColor: '#9b59b6', backgroundColor: '#9b59b6',
+           yAxisID: 'y',  tension: 0.25, fill: false, spanGaps: true }},
+        {{ label: 'utilization %', data: util,
+           borderColor: '#1abc9c', backgroundColor: '#1abc9c',
+           yAxisID: 'y1', tension: 0.25, fill: false, spanGaps: true }},
+      ],
+    }},
+    options: {{
+      responsive: true, maintainAspectRatio: false,
+      interaction: {{ mode: 'index' }},
+      scales: {{
+        y:  {{ position: 'left',  ticks: {{ callback: v => '$' + Number(v).toLocaleString() }} }},
+        y1: {{ position: 'right', min: 0, max: 100,
+               ticks: {{ callback: v => v + '%' }},
+               grid: {{ drawOnChartArea: false }} }},
+      }},
+    }},
+  }});
+}})();
 </script>
 </body>
 </html>
@@ -471,20 +723,39 @@ def build_html():
     pipeline_reports = load_pipeline_reports()
     finance_reports = load_finance_reports()
     payroll_reports = load_payroll_reports()
+    efficiency_reports = load_efficiency_reports()
     pipeline_series = derive_pipeline_series(pipeline_reports)
+    finance_series = load_finance_series()
+    payroll_series = load_payroll_series()
+    efficiency_series = load_efficiency_series()
+
+    metrics = _summary_metrics(
+        finance_series, payroll_series, efficiency_series, pipeline_series,
+    )
+    narrative_html = _summary_narrative(
+        metrics, finance_series, payroll_series, efficiency_series,
+    )
+    summary_narrative_block = (
+        f"<div class='narrative'>{narrative_html}</div>" if narrative_html else ""
+    )
 
     return _HTML_TEMPLATE.format(
         pipeline_count=len(pipeline_reports),
         finance_count=len(finance_reports),
         payroll_count=len(payroll_reports),
+        efficiency_count=len(efficiency_reports),
         pipeline_html=_render_report_list(pipeline_reports),
         finance_html=_render_report_list(finance_reports),
         payroll_html=_render_report_list(payroll_reports),
+        efficiency_html=_render_report_list(efficiency_reports),
         activity_html=_render_worker_activity(load_worker_activity()),
+        summary_metrics_html=_render_metrics_block(metrics),
+        summary_narrative_html=summary_narrative_block,
         customer_series_json=json.dumps(pipeline_series["customers"]),
         orders_value_series_json=json.dumps(pipeline_series["orders_value"]),
-        finance_series_json=json.dumps(load_finance_series()),
-        payroll_series_json=json.dumps(load_payroll_series()),
+        finance_series_json=json.dumps(finance_series),
+        payroll_series_json=json.dumps(payroll_series),
+        efficiency_series_json=json.dumps(efficiency_series),
     )
 
 
