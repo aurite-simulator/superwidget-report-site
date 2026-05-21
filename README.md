@@ -52,6 +52,33 @@ file:///<absolute-path>/model_data/reports/index.html
 
 Chart.js is loaded from CDN (needs internet on first view; browser-cached after).
 
+## Publish to GitHub Pages
+
+`publish.sh` pushes the latest `index.html` to this repo's `gh-pages` branch. GitHub Pages serves it at:
+
+```
+https://aurite-simulator.github.io/superwidget-report-site/
+```
+
+Workflow:
+
+```bash
+bash run.sh                                          # sim runs (agent rebuilds at sim midnight)
+venv/bin/python3 agents/report_site/agent.py         # optional: rebuild on demand
+bash agents/report_site/publish.sh                   # push to gh-pages
+```
+
+The script is idempotent — if `index.html` hasn't changed since the last publish, nothing is committed.
+
+**One-time setup** (when you publish for the first time):
+
+1. Run `publish.sh` once — it creates the `gh-pages` orphan branch and pushes the initial commit.
+2. On GitHub, go to repo Settings → Pages.
+3. Source: "Deploy from a branch". Branch: `gh-pages`. Folder: `/`. Save.
+4. The site goes live within ~1 minute at the URL above.
+
+**Privacy note.** Public repo + GitHub Pages = publicly accessible page. The HTML embeds synthetic simulation data plus the LLM-generated narrative sections (which mention dollar figures and per-salesperson loads). Fine for a public demo of the framework; if you'd rather keep the data private, make the repo private (requires GitHub Pro for private Pages) or skip publishing and view the file locally.
+
 ## Configuration
 
 Reads from the environment:
