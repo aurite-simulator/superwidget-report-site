@@ -4,7 +4,7 @@ A single-file HTML "control room" viewer for the [superwidget](https://github.co
 
 ## What you get
 
-The page has five tabs:
+The page has six tabs:
 
 | Tab | Contents |
 |---|---|
@@ -12,13 +12,14 @@ The page has five tabs:
 | **Pipeline Reports** | One collapsible `<details>` per daily pipeline report. Click to expand the full rendered markdown — status tables, file-queue depths, per-salesperson load, stuck-items watch, narrative. |
 | **Finance Reports** | Same shape, for the daily finance reports. |
 | **Payroll Reports** | Same shape, for the per-period payroll reports. |
+| **Efficiency Reports** | Same shape, for the per-period efficiency reports (cost-per-productive-firing per worker). |
 | **Worker Activity** | Per-worker rollup from `task_log_database` — total firings, ✓ vs ∅ split, hours on-shift vs off-shift, and a per-task breakdown. |
 
 The HTML is fully self-contained (one file, ~200 KB). Chart.js is loaded from CDN at view time.
 
 ## Quick start
 
-Assuming you already have a `superwidget` simulation set up (see the [model README](https://github.com/aurite-simulator/superwidget-model)):
+Assuming you already have a `superwidget` simulation set up (see the [SOI README](https://github.com/aurite-simulator/superwidget-model)):
 
 ```bash
 # Clone this agent into the framework's agents/ directory:
@@ -35,31 +36,31 @@ bash run.sh
 venv/bin/python3 agents/report_site/agent.py
 
 # Open the resulting file:
-xdg-open model_data/reports/index.html      # Linux
-open model_data/reports/index.html          # macOS
+xdg-open sim_data/reports/index.html      # Linux
+open sim_data/reports/index.html          # macOS
 ```
 
 That's the full local workflow. To make the page accessible to others, see "Publish to GitHub Pages" below.
 
 ## When the page updates
 
-The model's `crontab` includes an entry that fires this agent at sim-midnight every day, right after the daily pipeline and finance reports are written:
+The SOI's `crontab` includes an entry that fires this agent at sim-midnight every day, right after the daily pipeline and finance reports are written:
 
 ```
-0 0 * * *    $MODEL_DIR/../../venv/bin/python3 $MODEL_DIR/../../agents/report_site/agent.py
+0 0 * * *    $MODULE_DIR/../../venv/bin/python3 $MODULE_DIR/../../agents/report_site/agent.py
 ```
 
 So during a long sim run, the page refreshes itself daily. You can also rebuild on demand anytime — the agent is idempotent (every run replaces `index.html` from current state of the databases and report files).
 
-The page is **local only** until you publish it. The cron firing writes `model_data/reports/index.html` but does not push to GitHub Pages — that step is manual.
+The page is **local only** until you publish it. The cron firing writes `sim_data/reports/index.html` but does not push to GitHub Pages — that step is manual.
 
 ## Output location
 
 ```
-<framework>/model_data/reports/index.html
+<framework>/sim_data/reports/index.html
 ```
 
-Open in any browser via `file://`. The model_data directory is wiped by `setup_redis.py` on each fresh sim init, so the file is regenerated from scratch on the first cron firing (or your first manual `agent.py` invocation) after init.
+Open in any browser via `file://`. The sim_data directory is wiped by `setup_redis.py` on each fresh sim init, so the file is regenerated from scratch on the first cron firing (or your first manual `agent.py` invocation) after init.
 
 ## Publish to GitHub Pages
 
@@ -71,7 +72,7 @@ https://aurite-simulator.github.io/superwidget-report-site/
 
 ### One-time setup
 
-1. Run a sim and rebuild the viewer at least once so `model_data/reports/index.html` exists.
+1. Run a sim and rebuild the viewer at least once so `sim_data/reports/index.html` exists.
 2. Run `bash agents/report_site/publish.sh`. It creates the `gh-pages` orphan branch and pushes the initial commit.
 3. On GitHub: go to the [Pages settings](https://github.com/aurite-simulator/superwidget-report-site/settings/pages):
    - Source: **Deploy from a branch**
@@ -114,10 +115,10 @@ The agent reads from environment variables (no `runtime_config.toml` of its own)
 
 | Variable | Required? | Set by | Used for |
 |---|---|---|---|
-| `MODEL_DIR` | Yes (one of) | Cron worker | Locates `model_data/` two parents up |
-| `DATA_DIR` | Yes (one of) | You | Locates `model_data/` for manual runs |
+| `MODULE_DIR` | Yes (one of) | Cron worker | Locates `sim_data/` two parents up |
+| `DATA_DIR` | Yes (one of) | You | Locates `sim_data/` for manual runs |
 
-The cron-launch path automatically sets `MODEL_DIR`. For manual invocation, the agent finds the right path relative to its own location, so you don't usually need to set anything — just run it from the framework root.
+The cron-launch path automatically sets `MODULE_DIR`. For manual invocation, the agent finds the right path relative to its own location, so you don't usually need to set anything — just run it from the framework root.
 
 No `ANTHROPIC_API_KEY` needed — this agent doesn't call any LLM. It only reads SQLite files and renders markdown.
 
@@ -144,12 +145,12 @@ Chart.js is loaded from `https://cdn.jsdelivr.net/npm/chart.js` at view time (no
 ## Source data — what gets read
 
 ```
-model_data/reports/finance_report_*.md         # rendered into Finance Reports tab
-model_data/reports/pipeline_report_*.md        # rendered + snapshot extracted for charts
-model_data/reports/payroll_*.md                # rendered into Payroll Reports tab
-model_data/finance_database.db                 # time series for cash/AR/AP/etc. charts
-model_data/payroll_database.db                 # per-period totals for payroll chart
-model_data/task_log_database.db                # per-worker per-task rollup
+sim_data/reports/finance_report_*.md         # rendered into Finance Reports tab
+sim_data/reports/pipeline_report_*.md        # rendered + snapshot extracted for charts
+sim_data/reports/payroll_*.md                # rendered into Payroll Reports tab
+sim_data/finance_database.db                 # time series for cash/AR/AP/etc. charts
+sim_data/payroll_database.db                 # per-period totals for payroll chart
+sim_data/task_log_database.db                # per-worker per-task rollup
 ```
 
 The agent is **read-only** with respect to simulation state — it never writes to any simulation database or Redis key. It only writes `index.html`.

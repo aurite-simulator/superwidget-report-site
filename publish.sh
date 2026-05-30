@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Publish model_data/reports/index.html to the gh-pages branch of this
+# Publish sim_data/reports/index.html to the gh-pages branch of this
 # repo, served via GitHub Pages. Idempotent: if the file hasn't changed
 # since the last publish, no commit is made.
 #
@@ -16,7 +16,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-INDEX_HTML="$SCRIPT_DIR/../../model_data/reports/index.html"
+INDEX_HTML="$SCRIPT_DIR/../../sim_data/reports/index.html"
 SITE_URL="https://aurite-simulator.github.io/superwidget-report-site/"
 
 if [ ! -f "$INDEX_HTML" ]; then

@@ -1,25 +1,25 @@
 """report_site agent.
 
-Builds a single-file HTML "control room" viewer at model_data/reports/index.html
+Builds a single-file HTML "control room" viewer at sim_data/reports/index.html
 that aggregates every markdown report (finance, pipeline, payroll, efficiency),
 worker activity rolled up from task_log_database, and Chart.js graphs of
 pipeline + finance + payroll + efficiency metrics over sim time.
 
-Triggered by the framework's cron worker on a schedule defined in the model's
+Triggered by the framework's cron worker on a schedule defined in the SOI's
 crontab. Can also be invoked manually after a simulation finishes.
 
 Reads:
-  model_data/reports/finance_report_*.md
-  model_data/reports/pipeline_report_*.md   (including embedded SNAPSHOT JSON)
-  model_data/reports/payroll_*.md
-  model_data/reports/efficiency_*.md
-  model_data/finance_database.db            (time series of finance state)
-  model_data/payroll_database.db            (pay period rollups)
-  model_data/task_log_database.db           (per-worker per-task firings)
+  sim_data/reports/finance_report_*.md
+  sim_data/reports/pipeline_report_*.md   (including embedded SNAPSHOT JSON)
+  sim_data/reports/payroll_*.md
+  sim_data/reports/efficiency_*.md
+  sim_data/finance_database.db            (time series of finance state)
+  sim_data/payroll_database.db            (pay period rollups)
+  sim_data/task_log_database.db           (per-worker per-task firings)
   framework/run.log                         (full text log — referenced only)
 
 Writes:
-  model_data/reports/index.html
+  sim_data/reports/index.html
 """
 
 import html as html_module
@@ -41,16 +41,16 @@ except ImportError:
 
 # ─── Path resolution ─────────────────────────────────────────────────────
 
-# When fired by the cron worker, $MODEL_DIR points at <framework>/models/<name>/.
-# model_data/ is two parents up from that; the agent itself lives at
+# When fired by the cron worker, $MODULE_DIR points at <framework>/soi/<name>/.
+# sim_data/ is two parents up from that; the agent itself lives at
 # <framework>/agents/report_site/.
-_MODEL_DIR = os.environ.get("MODEL_DIR")
-if _MODEL_DIR:
-    DATA_DIR = Path(os.path.normpath(os.path.join(_MODEL_DIR, "..", "..", "model_data")))
+_MODULE_DIR = os.environ.get("MODULE_DIR")
+if _MODULE_DIR:
+    DATA_DIR = Path(os.path.normpath(os.path.join(_MODULE_DIR, "..", "..", "sim_data")))
 else:
     _DD = os.environ.get("DATA_DIR")
     if not _DD:
-        sys.exit("[report_site] DATA_DIR (or MODEL_DIR) must be set")
+        sys.exit("[report_site] DATA_DIR (or MODULE_DIR) must be set")
     DATA_DIR = Path(_DD)
 
 FRAMEWORK_DIR = DATA_DIR.parent
