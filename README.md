@@ -1,6 +1,6 @@
 # superwidget-report-site
 
-A single-file HTML "control room" viewer for the [superwidget](https://github.com/aurite-simulator/superwidget-model) simulation. After each sim-day (or whenever you ask), it walks every output of the run and renders one self-contained `index.html` you can open locally or publish to GitHub Pages.
+A single-file HTML "control room" viewer for the [superwidget](https://github.com/aurite-simulator/superwidget-soi) simulation. After each sim-day (or whenever you ask), it walks every output of the run and renders one self-contained `index.html` you can open locally or publish to GitHub Pages.
 
 ## What you get
 
@@ -19,11 +19,11 @@ The HTML is fully self-contained (one file, ~200 KB). Chart.js is loaded from CD
 
 ## Quick start
 
-Assuming you already have a `superwidget` simulation set up (see the [SOI README](https://github.com/aurite-simulator/superwidget-model)):
+Assuming you already have a `superwidget` simulation set up (see the [SOI README](https://github.com/aurite-simulator/superwidget-soi)):
 
 ```bash
-# Clone this agent into the framework's agents/ directory:
-git clone https://github.com/aurite-simulator/superwidget-report-site agents/report_site
+# Clone this monitor into the framework's monitors/ directory:
+git clone https://github.com/aurite-simulator/superwidget-report-site monitors/report_site
 
 # Install dependencies (markdown package):
 bash setup.sh
