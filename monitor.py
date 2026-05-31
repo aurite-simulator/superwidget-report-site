@@ -1,12 +1,13 @@
-"""report_site agent.
+"""report_site monitor.
 
 Builds a single-file HTML "control room" viewer at sim_data/reports/index.html
 that aggregates every markdown report (finance, pipeline, payroll, efficiency),
 worker activity rolled up from task_log_database, and Chart.js graphs of
 pipeline + finance + payroll + efficiency metrics over sim time.
 
-Triggered by the framework's cron worker on a schedule defined in the SOI's
-crontab. Can also be invoked manually after a simulation finishes.
+Fires daily at 00:00 sim-time via the framework's monitor worker (the hour
+after the daily report-generating monitors at 23:00, so this run picks up
+the freshly-written markdown).
 
 Reads:
   sim_data/reports/finance_report_*.md
@@ -27,32 +28,20 @@ import json
 import os
 import re
 import sqlite3
-import sys
+from datetime import datetime
 from pathlib import Path
 
-try:
-    import markdown
-except ImportError:
-    sys.exit(
-        "[report_site] missing dependency: `markdown` — run "
-        "`venv/bin/pip install -r agents/report_site/requirements.txt`"
-    )
+import markdown
+
+import db
+
+
+SCHEDULE = "0 0 * * *"   # daily at 00:00 sim-time
 
 
 # ─── Path resolution ─────────────────────────────────────────────────────
 
-# When fired by the cron worker, $MODULE_DIR points at <framework>/soi/<name>/.
-# sim_data/ is two parents up from that; the agent itself lives at
-# <framework>/agents/report_site/.
-_MODULE_DIR = os.environ.get("MODULE_DIR")
-if _MODULE_DIR:
-    DATA_DIR = Path(os.path.normpath(os.path.join(_MODULE_DIR, "..", "..", "sim_data")))
-else:
-    _DD = os.environ.get("DATA_DIR")
-    if not _DD:
-        sys.exit("[report_site] DATA_DIR (or MODULE_DIR) must be set")
-    DATA_DIR = Path(_DD)
-
+DATA_DIR = Path(db.DATA_DIR)
 FRAMEWORK_DIR = DATA_DIR.parent
 REPORTS_DIR = DATA_DIR / "reports"
 RUN_LOG = FRAMEWORK_DIR / "run.log"
@@ -759,7 +748,7 @@ def build_html():
     )
 
 
-def main():
+def run(sim_time: datetime) -> None:
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT.write_text(build_html(), encoding="utf-8")
     size_kb = OUTPUT.stat().st_size / 1024
@@ -767,4 +756,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run(datetime.now())
